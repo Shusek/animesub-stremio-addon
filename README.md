@@ -1,7 +1,3 @@
-## 🌍 Language
-- 🇬🇧 English (default)
-- 🇵🇱 [Polski](README.pl.md)
-
 # AnimeSub.info – Stremio Addon
 
 A Stremio addon that fetches Polish subtitles for anime from [animesub.info](http://animesub.info).
@@ -14,7 +10,7 @@ Rewritten in Python from a [JS addon](https://huggingface.co/spaces/anemicpathbl
 2. The addon queries Cinemeta (or the Kitsu API) to retrieve the anime title — no API key required
 3. It searches for the title on animesub.info using several strategies (title + episode, title only, English and original titles)
 4. It filters results — removes other series (e.g. Boruto when searching for Naruto), openings, endings, and spin-offs
-5. When the user selects subtitles, the addon downloads a ZIP in two steps (session + fresh hash), extracts it, converts ASS → SRT, and serves the file
+5. When the user selects subtitles, the addon downloads a ZIP in two steps (session + fresh hash), extracts it, optionally converts ASS → SRT, and serves the file
 
 ## Project structure
 
@@ -25,8 +21,7 @@ Rewritten in Python from a [JS addon](https://huggingface.co/spaces/anemicpathbl
 ├── deploy.sh          # Initial deployment script for Oracle Cloud
 ├── restart.sh         # Restart after updating the code
 ├── render.yaml        # Configuration for Render (alternative)
-├── README.md
-└── README.pl.md
+└── README.md
 ```
 
 ## Quick start (local)
@@ -40,16 +35,120 @@ python3 main.py
 
 The addon will start at `http://localhost:8080/manifest.json`.
 
+## Stremio configuration
+
+The addon has a configuration page at:
+
+```text
+https://your-domain/configure
+```
+
+The page lets you choose:
+
+- **Default subtitles language** — the value returned to Stremio in the `lang` field (default: `pol`)
+- **Convert ASS/SSA to SRT** — enabled by default because Stremio handles SRT most reliably
+
+After changing the options, the page generates a dedicated manifest URL, for example:
+
+```text
+https://your-domain/eyJsYW5ndWFnZSI6InBvbCIsImNvbnZlcnRfYXNzIjp0cnVlfQ/manifest.json
+```
+
+Install that generated URL in Stremio. If you install the plain `/manifest.json`, the addon uses defaults: language `pol` and ASS/SSA conversion enabled.
+
 ## Quick start (docker)
 You can run this project as a Docker container using the pre-built image. This is the fastest way to deploy the addon without the need to set up a local Python environment.
 
-Run the container:
+### Docker Compose
+
+The simplest option for your own server:
+
+```bash
+BASE_URL=http://localhost:8080 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+```
+
+If port `8080` is already in use, set another host port and match `BASE_URL`:
+
+```bash
+HOST_PORT=18080 BASE_URL=http://localhost:18080 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+```
+
+After startup, open:
+
+```text
+http://localhost:8080/configure
+```
+
+On a public server without Coolify, set `BASE_URL` to the public HTTPS address:
+
+```bash
+BASE_URL=https://your-subdomain.duckdns.org docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+```
+
+By default, Compose pulls the prebuilt image:
+
+```text
+ghcr.io/shusek/animesub-stremio-addon:1.1.0
+```
+
+If you develop locally and want to build the image from the current files:
+
+```bash
+BASE_URL=http://localhost:8080 docker compose -f docker-compose.yml -f docker-compose.build.yml -f docker-compose.local.yml up -d --build
+```
+
+### Docker run
+
+Run the container without Compose:
+
 ```bash
 docker run -d \
   --name animesub-stremio-addon \
   -p 8080:8080 \
   -e BASE_URL=http://localhost:8080 \
-  docker.io/ludvickpro/animesub-stremio-addon:latest
+  -e DEFAULT_LANGUAGE=pol \
+  ghcr.io/shusek/animesub-stremio-addon:1.1.0
+```
+
+### Publishing the image
+
+The prebuilt image is published by GitHub Actions from the version stored in the `version` file.
+
+After a push to `main` or a `v*` tag, the workflow publishes:
+
+```text
+ghcr.io/shusek/animesub-stremio-addon:1.1.0
+ghcr.io/shusek/animesub-stremio-addon:latest
+```
+
+No custom token is required. The workflow uses the built-in `GITHUB_TOKEN` with `packages: write`.
+
+After the first publish, just make sure the GitHub Packages image is public so Coolify can pull it without registry credentials.
+
+## Coolify deployment
+
+Yes, the project is ready to deploy as Docker Compose in Coolify.
+
+1. Create a new **Docker Compose** resource in Coolify from this repository
+2. Use `docker-compose.yml` as the Compose file (without `docker-compose.local.yml` and without `docker-compose.build.yml`)
+3. For the `animesub-stremio-addon` service, set the domain to container port `8080`, for example:
+
+```text
+https://your-domain.com:8080
+```
+
+The port in Coolify's domain field tells the proxy which container port to route to. The public URL still works through standard HTTPS.
+
+`BASE_URL` can stay empty because the addon builds public URLs from requests coming through the proxy. If you use a custom proxy or see the wrong host in the manifest, set this Coolify environment variable:
+
+```text
+BASE_URL=https://your-domain.com
+```
+
+After deployment, open:
+
+```text
+https://your-domain.com/configure
 ```
 
 ## Deployment on Oracle Cloud (recommended, free 24/7)
@@ -126,6 +225,7 @@ The `render.yaml` file is ready. The free plan sleeps after 15 minutes. Set the 
 |------------|----------|-------------|
 | `BASE_URL` | Yes*     | Full deployment URL (with https://). Auto-detected on HF Spaces and locally |
 | `PORT`     | No       | Server port (default: 8080) |
+| `DEFAULT_LANGUAGE` | No | Default language code shown in the configurator (default: `pol`) |
 
 ## Useful commands (Oracle Cloud)
 
@@ -142,7 +242,7 @@ sudo systemctl status caddy         # Caddy (HTTPS) status
 
 **Security system** — animesub.info binds the download hash to a session. The addon first opens the search page (gets cookies + fresh hash), then downloads the file within the same session.
 
-**ASS → SRT conversion** — Stremio does not support ASS/SSA, so the addon converts it on the server side.
+**ASS → SRT conversion** — Stremio does not handle ASS/SSA reliably, so the addon converts it on the server side by default. You can disable this in the configurator, in which case the original ASS/SSA file is returned without conversion.
 
 **Result filtering** — the addon checks whether the subtitle title matches the requested anime and removes other series (e.g. Shippuuden when searching for Naruto), openings, endings, and spin-offs.
 

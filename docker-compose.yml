@@ -1,0 +1,10 @@
+services:
+  animesub-stremio-addon:
+    image: ghcr.io/shusek/animesub-stremio-addon:${IMAGE_TAG:-1.1.0}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      - SERVICE_URL_ANIMESUB_8080
+      - BASE_URL=${BASE_URL:-}
+      - DEFAULT_LANGUAGE=${DEFAULT_LANGUAGE:-pol}

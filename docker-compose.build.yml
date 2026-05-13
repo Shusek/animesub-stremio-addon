@@ -1,0 +1,5 @@
+services:
+  animesub-stremio-addon:
+    build:
+      context: .
+    image: animesub-stremio-addon:${IMAGE_TAG:-1.1.0}

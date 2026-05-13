@@ -168,6 +168,54 @@
       text-align: center;
       margin-top: 10px;
     }
+
+    .config-panel {
+      width: 100%;
+      max-width: 600px;
+      display: grid;
+      gap: 16px;
+      margin: 4px auto 12px;
+      padding: 18px;
+      background: rgba(28, 28, 28, 0.72);
+      border: 1px solid #454545;
+      border-radius: 6px;
+      text-align: left;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field label,
+    .checkbox-field {
+      font-size: 14px;
+      font-weight: 700;
+      color: #f4f4f4;
+    }
+
+    .select-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #5a5a5a;
+      border-radius: 6px;
+      background: #121212;
+      color: #fff;
+      font-size: 15px;
+      outline: none;
+    }
+
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .checkbox-field input {
+      width: 18px;
+      height: 18px;
+      accent-color: #00a862;
+    }
   </style>
 </head>
 
@@ -182,14 +230,27 @@
       Automatyczne wczytywanie polskich napisów<br>do anime z&nbsp;<a href="http://animesub.info">AnimeSub.info</a>
       w&nbsp;<a href="https://web.strem.io">Stremio</a>.
     </div>
+
+    <form class="config-panel" id="config-form">
+      <div class="field">
+        <label for="language">Domyślny język napisów</label>
+        <select class="select-input" id="language" name="language"></select>
+      </div>
+
+      <label class="checkbox-field" for="convert-ass">
+        <input id="convert-ass" name="convert_ass" type="checkbox" />
+        Konwertuj ASS/SSA do SRT
+      </label>
+    </form>
+
     <div class="buttons">
 
-      <a href="{stremio_url}" class="btn btn-green">
+      <a href="{stremio_url}" class="btn btn-green" id="install-app">
         <i class="fa-solid fa-download"></i>
         Instaluj (App)
       </a>
 
-      <a href="https://web.strem.io/#/addons?addon={public_url}/manifest.json" class="btn btn-green">
+      <a href="https://web.strem.io/#/addons?addon={manifest_url}" class="btn btn-green" id="install-web">
         <i class="fa-solid fa-download"></i>
         Instaluj (Web)
       </a>
@@ -197,7 +258,7 @@
     </div>
     <div class="file-path" style="text-align:center;">
       <p style="font-size: 14px; color: #888;">Link do manifestu:</p>
-      <input class="file-input" readonly value="{public_url}/manifest.json" />
+      <input class="file-input" id="manifest-url" readonly value="{manifest_url}" />
     </div>
     <br>
     <div style="margin-top:20px;">
@@ -214,6 +275,64 @@
     </a>
   </footer>
 
+  <script>
+    const publicUrl = "{public_url}";
+    const defaultConfig = {default_config_json};
+    const languageOptions = {language_options_json};
+    const languageLabels = {
+      pol: "Polski (pol)",
+      eng: "English (eng)",
+      jpn: "Japanese (jpn)",
+      spa: "Spanish (spa)",
+      por: "Portuguese (por)",
+      fre: "French (fre)",
+      ger: "German (ger)",
+      ita: "Italian (ita)",
+      cze: "Czech (cze)",
+      slo: "Slovak (slo)",
+      ukr: "Ukrainian (ukr)",
+      rus: "Russian (rus)"
+    };
+
+    const languageSelect = document.getElementById("language");
+    const convertAssInput = document.getElementById("convert-ass");
+    const installAppLink = document.getElementById("install-app");
+    const installWebLink = document.getElementById("install-web");
+    const manifestUrlInput = document.getElementById("manifest-url");
+
+    for (const code of languageOptions) {
+      const option = document.createElement("option");
+      option.value = code;
+      option.textContent = languageLabels[code] || code;
+      languageSelect.appendChild(option);
+    }
+
+    languageSelect.value = defaultConfig.language;
+    convertAssInput.checked = defaultConfig.convert_ass;
+
+    function encodeConfig(config) {
+      return btoa(JSON.stringify(config))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/g, "");
+    }
+
+    function updateInstallLinks() {
+      const config = {
+        language: languageSelect.value,
+        convert_ass: convertAssInput.checked
+      };
+      const manifestUrl = `${publicUrl}/${encodeConfig(config)}/manifest.json`;
+
+      installAppLink.href = manifestUrl.replace(/^https?:\/\//, "stremio://");
+      installWebLink.href = `https://web.strem.io/#/addons?addon=${encodeURIComponent(manifestUrl)}`;
+      manifestUrlInput.value = manifestUrl;
+    }
+
+    languageSelect.addEventListener("change", updateInstallLinks);
+    convertAssInput.addEventListener("change", updateInstallLinks);
+    updateInstallLinks();
+  </script>
 </body>
 
 </html>

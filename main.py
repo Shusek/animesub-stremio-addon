@@ -9,6 +9,9 @@ import io
 import time
 import logging
 import zipfile
+import base64
+import copy
+import json
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -26,10 +29,23 @@ with open("version", "r") as f:
 
 # ── Konfiguracja ──────────────────────────────────────────────
 
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8080")
+BASE_URL = (
+    os.environ.get("BASE_URL")
+    or os.environ.get("SERVICE_URL_ANIMESUB_8080")
+    or os.environ.get("COOLIFY_URL")
+    or "http://localhost:8080"
+)
 ANIMESUB_BASE = "http://animesub.info"
 SEARCH_URL = f"{ANIMESUB_BASE}/szukaj.php"
 DOWNLOAD_URL = f"{ANIMESUB_BASE}/sciagnij.php"
+
+LANGUAGE_OPTIONS = [
+    "pol", "eng", "jpn", "spa", "por", "fre", "ger", "ita",
+    "cze", "slo", "ukr", "rus",
+]
+DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "pol").strip().lower()
+if DEFAULT_LANGUAGE not in LANGUAGE_OPTIONS:
+    DEFAULT_LANGUAGE = "pol"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("animesub")
@@ -62,12 +78,97 @@ MANIFEST = {
     "idPrefixes": ["tt", "kitsu"],
     "contactEmail": "piotrek1488@gmail.com",
     "catalogs": [],
-    "behaviorHints": {"configurable": False, "configurationRequired": False},
+    "behaviorHints": {"configurable": True, "configurationRequired": False},
+    "config": [
+        {
+            "key": "language",
+            "type": "select",
+            "title": "Default subtitles language",
+            "default": DEFAULT_LANGUAGE,
+            "options": LANGUAGE_OPTIONS,
+        },
+        {
+            "key": "convert_ass",
+            "type": "checkbox",
+            "title": "Convert ASS/SSA subtitles to SRT",
+            "default": "checked",
+        },
+    ],
     "stremioAddonsConfig": {
         "issuer": "https://stremio-addons.net",
         "signature": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2In0..aSYEHxT9ElzC3NMzieMURQ.NBGSJWCtIlnD50iQgc5N7MSXn10fJWNsHQzQGFrdLmiyaqFpNUeqLVr9m5YHMXBaZEZwGV5_jvvGxldsB_RnJVrhnxm5xQp5zN_JnXzr6q6USTNHIX540TcAJOR9yv4z.0xbyk_xjDoiR2uzvuOUkbg"
     }
 }
+
+
+def _parse_bool(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "checked"}
+
+
+def normalize_config(config: Optional[dict] = None) -> dict:
+    config = config or {}
+    language = str(config.get("language") or config.get("lang") or DEFAULT_LANGUAGE).strip().lower()
+    if language not in LANGUAGE_OPTIONS:
+        language = DEFAULT_LANGUAGE
+
+    convert_ass = config.get("convert_ass")
+    if convert_ass is None:
+        convert_ass = config.get("convertAss")
+
+    return {
+        "language": language,
+        "convert_ass": _parse_bool(convert_ass, True),
+    }
+
+
+def encode_config(config: Optional[dict] = None) -> str:
+    data = json.dumps(normalize_config(config), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def decode_config(token: Optional[str] = None) -> dict:
+    if not token:
+        return normalize_config()
+    try:
+        padding = "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(f"{token}{padding}".encode("ascii")).decode("utf-8")
+        decoded = json.loads(raw)
+        if isinstance(decoded, dict):
+            return normalize_config(decoded)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("[Config] Nieprawidłowy token konfiguracji, używam domyślnej")
+    return normalize_config()
+
+
+def build_manifest(config: Optional[dict] = None, base_url: Optional[str] = None) -> dict:
+    addon_config = normalize_config(config)
+    manifest = copy.deepcopy(MANIFEST)
+    manifest["logo"] = f"{base_url or BASE_URL}/static/icon.jpg"
+    manifest["config"][0]["default"] = addon_config["language"]
+    manifest["config"][1]["default"] = "checked" if addon_config["convert_ass"] else ""
+    return manifest
+
+
+def get_public_base_url(request: Request) -> str:
+    host = request.headers.get("host", "127.0.0.1:8080")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    if forwarded_proto:
+        protocol = forwarded_proto.split(",")[0].strip()
+    elif any(domain in host for domain in ("duckdns.org", "hf.space", "onrender.com", "koyeb.app")):
+        protocol = "https"
+    else:
+        protocol = request.url.scheme
+    return f"{protocol}://{host}"
+
+
+def stremio_url_from_manifest_url(manifest_url: str) -> str:
+    return re.sub(r"^https?://", "stremio://", manifest_url)
 
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -79,14 +180,17 @@ async def version():
     except: return PlainTextResponse("?", status_code=404)
 
 async def index(request: Request):
-    host = request.headers.get("host", "127.0.0.1:8080")
-    protocol = "https" if "duckdns.org" in host else "http"
-    full_url = f"{protocol}://{host}"
+    full_url = get_public_base_url(request)
+    default_config = normalize_config()
+    configured_manifest_url = f"{full_url}/{encode_config(default_config)}/manifest.json"
     try:
         with open("static/index.html", "r", encoding="utf-8") as f:
             content = f.read()
         content = content.replace("{public_url}", full_url)
-        content = content.replace("{stremio_url}", f"stremio://{host}/manifest.json")
+        content = content.replace("{manifest_url}", configured_manifest_url)
+        content = content.replace("{stremio_url}", stremio_url_from_manifest_url(configured_manifest_url))
+        content = content.replace("{default_config_json}", json.dumps(default_config))
+        content = content.replace("{language_options_json}", json.dumps(LANGUAGE_OPTIONS))
         content = content.replace("{version_placeholder}", app_version)
         content = content.replace("{current_year}", year)
         return HTMLResponse(content=content)
@@ -94,10 +198,20 @@ async def index(request: Request):
         return HTMLResponse("<h1>static/index.html not found</h1>", status_code=404)
 app.add_api_route("/", index, methods=["GET", "HEAD"])
 
+
+@app.get("/configure")
+async def configure(request: Request):
+    return await index(request)
+
+
 @app.get("/manifest.json")
-@app.get("/")
-async def manifest():
-    return JSONResponse(content=MANIFEST)
+async def manifest(request: Request):
+    return JSONResponse(content=build_manifest(base_url=get_public_base_url(request)))
+
+
+@app.get("/{config}/manifest.json")
+async def configured_manifest(request: Request, config: str):
+    return JSONResponse(content=build_manifest(decode_config(config), get_public_base_url(request)))
 
 @app.get("/static/icon.jpg")
 async def logo():
@@ -670,6 +784,21 @@ def convert_tmplayer_to_srt(content: str) -> str:
         out.extend([str(i), f"{d['start']} --> {d['end']}", d["text"], ""])
     return "\n".join(out)
 
+
+def _subtitle_media_type(ext: str) -> str:
+    if ext == ".srt":
+        return "text/srt; charset=utf-8"
+    if ext in (".ass", ".ssa"):
+        return "text/x-ssa; charset=utf-8"
+    return "text/plain; charset=utf-8"
+
+
+def _safe_subtitle_ext(ext: str) -> str:
+    if re.match(r"^\.[a-z0-9]{1,8}$", ext):
+        return ext
+    return ".srt"
+
+
 # ══════════════════════════════════════════════════════════════
 #  POBIERANIE NAPISÓW (proxy endpoint)
 #
@@ -680,9 +809,17 @@ def convert_tmplayer_to_srt(content: str) -> str:
 # ══════════════════════════════════════════════════════════════
 
 @app.get("/subtitles/download")
-async def download_subtitle(id: str, hash: str, query: str = "test", type: str = "org", sort: str = "pobrn", page: int = 0):
+async def download_subtitle(
+    id: str,
+    hash: str,
+    query: str = "test",
+    type: str = "org",
+    sort: str = "pobrn",
+    page: int = 0,
+    convert_ass: bool = True,
+):
     """Proxy do pobierania napisów z animesub.info."""
-    log.info(f"[Download] id={id}, query={query}")
+    log.info(f"[Download] id={id}, query={query}, convert_ass={convert_ass}")
 
     try:
         async with httpx.AsyncClient(
@@ -798,23 +935,28 @@ async def download_subtitle(id: str, hash: str, query: str = "test", type: str =
 
             # ASS/SSA → SRT
             if subtitle_ext in (".ass", ".ssa"):
-                log.info("[Download] Konwertuję ASS → SRT...")
-                try:
-                    srt = convert_ass_to_srt(text)
-                    if srt and len(srt) > 10:
-                        text = srt
-                        log.info("[Download] ✓ Konwersja OK")
-                except Exception as e:
-                    log.error(f"[Download] Błąd konwersji: {e}")
+                if convert_ass:
+                    log.info("[Download] Konwertuję ASS → SRT...")
+                    try:
+                        srt = convert_ass_to_srt(text)
+                        if srt and len(srt) > 10:
+                            text = srt
+                            subtitle_ext = ".srt"
+                            log.info("[Download] ✓ Konwersja OK")
+                    except Exception as e:
+                        log.error(f"[Download] Błąd konwersji: {e}")
+                else:
+                    log.info("[Download] Pomijam konwersję ASS/SSA zgodnie z konfiguracją")
             if "-->" in text:
                 text = _deoverlap_srt(text)
+            subtitle_ext = _safe_subtitle_ext(subtitle_ext)
             log.info(f"[Download] ✓ Wysyłam ({len(text)} znaków)")
             return Response(
                 content=text.encode("utf-8"),
-                media_type="text/srt; charset=utf-8",
+                media_type=_subtitle_media_type(subtitle_ext),
                 headers={
                     "Access-Control-Allow-Origin": "*",
-                    "Content-Disposition": 'attachment; filename="subtitle.srt"',
+                    "Content-Disposition": f'attachment; filename="subtitle{subtitle_ext}"',
                 },
             )
 
@@ -828,14 +970,53 @@ async def download_subtitle(id: str, hash: str, query: str = "test", type: str =
 # ══════════════════════════════════════════════════════════════
 
 @app.get("/subtitles/{content_type}/{content_id}/{extra:path}")
-async def subtitles_handler_extra(content_type: str, content_id: str, extra: str = ""):
-    return await subtitles_handler(content_type, content_id)
+async def subtitles_handler_extra(request: Request, content_type: str, content_id: str, extra: str = ""):
+    return await subtitles_handler(content_type, content_id, base_url=get_public_base_url(request))
 
 
 @app.get("/subtitles/{content_type}/{content_id}.json")
-async def subtitles_handler(content_type: str, content_id: str):
+async def subtitles_handler_default(request: Request, content_type: str, content_id: str):
+    return await subtitles_handler(content_type, content_id, base_url=get_public_base_url(request))
+
+
+@app.get("/{config}/subtitles/{content_type}/{content_id}/{extra:path}")
+async def configured_subtitles_handler_extra(
+    request: Request,
+    config: str,
+    content_type: str,
+    content_id: str,
+    extra: str = "",
+):
+    return await subtitles_handler(
+        content_type,
+        content_id,
+        decode_config(config),
+        get_public_base_url(request),
+    )
+
+
+@app.get("/{config}/subtitles/{content_type}/{content_id}.json")
+async def configured_subtitles_handler(request: Request, config: str, content_type: str, content_id: str):
+    return await subtitles_handler(
+        content_type,
+        content_id,
+        decode_config(config),
+        get_public_base_url(request),
+    )
+
+
+async def subtitles_handler(
+    content_type: str,
+    content_id: str,
+    config: Optional[dict] = None,
+    base_url: Optional[str] = None,
+):
     """Endpoint wywoływany przez Stremio."""
-    log.info(f"\n[Request] type={content_type}, id={content_id}")
+    addon_config = normalize_config(config)
+    log.info(
+        f"\n[Request] type={content_type}, id={content_id}, "
+        f"lang={addon_config['language']}, convert_ass={addon_config['convert_ass']}"
+    )
 
     try:
         meta = await get_meta_info(content_type, content_id)
@@ -885,12 +1066,13 @@ async def subtitles_handler(content_type: str, content_id: str):
                 "query": sub["sq"], "type": sub["st"],
                 "sort": sub.get("sort", "pobrn"),
                 "page": sub.get("page", 0),
+                "convert_ass": "1" if addon_config["convert_ass"] else "0",
             })
 
             stremio_subs.append({
                 "id": f"animesub-{sub['id']}",
-                "url": f"{BASE_URL}/subtitles/download?{params}",
-                "lang": "pol",
+                "url": f"{base_url or BASE_URL}/subtitles/download?{params}",
+                "lang": addon_config["language"],
                 "SubtitleName": label,
             })
 

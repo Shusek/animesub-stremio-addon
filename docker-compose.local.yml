@@ -1,0 +1,4 @@
+services:
+  animesub-stremio-addon:
+    ports:
+      - "${HOST_PORT:-8080}:8080"
